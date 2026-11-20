@@ -859,7 +859,7 @@ $('iGo').onclick = async () => {
       if (ch && !changed.includes(ex)) changed.push(ex);
       }
     }
-    if (miss.length) console.log('Average retail price — no matching product name:', miss);
+    if (miss.length) console.log('Retail price — no matching product name:', miss);
     render();
     if (mode === 'db') await pool(changed, r => saveRow(r.id, true)); else localSave();
     syncLabel();
