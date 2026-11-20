@@ -151,7 +151,7 @@ aside .pimg img,aside .pimg .ph{width:64px;height:64px;border-radius:4px;object-
   <h2>Import products</h2>
   <div class="sub" id="iSub"></div>
   <div class="form map" id="fImport"></div>
-  <div class="radio" style="flex-direction:column;gap:6px"><label><input type="radio" name="imode" value="update"> Update matching products by Product ID — fills in pictures and costs, keeps your prices</label><label><input type="radio" name="imode" value="add" checked> Add as new rows</label><label><input type="radio" name="imode" value="replace"> Replace all rows</label></div>
+  <div class="radio" style="flex-direction:column;gap:6px"><label><input type="radio" name="imode" value="update"> Update matching products by Product ID (or by product name if the file has no Product ID) — fills in pictures, costs and average retail price, keeps your prices</label><label><input type="radio" name="imode" value="add" checked> Add as new rows</label><label><input type="radio" name="imode" value="replace"> Replace all rows</label></div>
   <div class="acts"><button class="btn" data-close>Cancel</button><button class="btn pri" id="iGo">Import</button></div>
 </div></div>
 
@@ -207,6 +207,7 @@ const COLS = [
   {k:'pmu', label:'Profit markup %', sub:'we earn ÷ cost · type % → price', t:'pmu', w:96},
   {k:'mu', label:'Total markup on cost %', sub:'fees + extra + profit · type % → price', t:'mu', w:104},
   {k:'price', label:'Selling price', sub:'RM, after seller discount', t:'num', w:96, key:true},
+  {k:'asp', label:'Average retail price', sub:'RM, TikTok avg selling price', t:'num', w:92},
   {k:'fees', label:'TikTok fees', sub:'RM', t:'calc', w:80},
   {k:'settle', label:'You receive', sub:'settlement', t:'calc', w:86},
   {k:'profit', label:'We earn', sub:'RM / unit, after everything', t:'calc', w:84},
@@ -214,7 +215,7 @@ const COLS = [
 ];
 const LET = i => String.fromCharCode(65 + i);
 const colName = i => (i >= 26 ? String.fromCharCode(64 + Math.floor(i / 26)) : '') + String.fromCharCode(65 + i % 26);
-const NUMK = new Set(['cost','extra','shipPct','aff','pf','price']);
+const NUMK = new Set(['cost','extra','shipPct','aff','pf','price','asp']);
 
 let S = {...DEF};
 const rows = new Map();          // id -> row
@@ -653,7 +654,8 @@ const MAP = [
   ['pid', 'Product ID', [/^pid$|product\s*id|产品\s*id|商品\s*id/i]],
   ['sku', 'SKU ID', [/sku/i]],
   ['cost', 'Sheet cost 本钱', [/本钱|sheet\s*cost/i, /^(?!.*(real|extra)).*(cost|cogs|成本)/i]],
-  ['price', 'Selling price', [/selling\s*price|售价/i, /^(?!.*(break|cost)).*price/i]],
+  ['price', 'Selling price', [/^(?!.*(avg|average|retail)).*(selling\s*price|售价)/i, /^(?!.*(break|cost|avg|average|retail)).*price/i]],
+  ['asp', 'Average retail price', [/average\s*retail|avg\.?\s*(selling|retail)?\s*price|average\s*selling|^asp\b/i]],
   ['extra', 'Extra cost', [/extra\s*cost|调色/i]],
   ['shipPct', 'Seller shipping % of cost', [/seller\s*shipping/i]],
   ['aff', 'Affiliate %', [/affiliate/i]],
@@ -789,6 +791,7 @@ function showImport() {
     const hit = pids.filter(p => have.has(p)).length;
     document.querySelector(`input[name=imode][value=${hit && hit >= pids.length / 2 ? 'update' : 'add'}]`).checked = true;
   }
+  if (d.row >= 0 && d.map.asp != null && d.map.cost == null) document.querySelector('input[name=imode][value=update]').checked = true;
   $('mImport').classList.add('open');
 }
 $('iGo').onclick = async () => {
@@ -799,8 +802,9 @@ $('iGo').onclick = async () => {
   for (let r = d.row + 1; r < sh.grid.length; r++) {
     const g = sh.grid[r]; const get = k => map[k] == null ? '' : g[map[k]];
     const row = {name: String(get('name') || '').trim(), variation: String(get('variation') || '').trim(), pid: String(get('pid') || '').trim(), sku: String(get('sku') || '').trim(),
-      cost: num(get('cost')), price: num(get('price')), extra: num(get('extra')), shipPct: num(get('shipPct')), aff: num(get('aff')), pf: num(get('pf'))};
-    if (!row.name && !row.pid && row.cost == null) continue;
+      cost: num(get('cost')), price: num(get('price')), asp: num(get('asp')), extra: num(get('extra')), shipPct: num(get('shipPct')), aff: num(get('aff')), pf: num(get('pf'))};
+    if (!row.name && !row.pid && row.cost == null && row.asp == null) continue;
+    if (row.asp == null) delete row.asp;
     row.img = sh.imgs[r] || (row.pid && row.pid === lastPid ? lastImg : '');
     lastImg = row.img; lastPid = row.pid;
     const pfDef0 = (+S.txn || 0) + (+S.comm || 0) + (+S.bxp || 0) + (+S.vxp || 0);
@@ -817,20 +821,31 @@ $('iGo').onclick = async () => {
   $('mImport').classList.remove('open');
   if (!out.length) { toast('Nothing to import — check the column choices.'); return; }
   if (document.querySelector('input[name=imode]:checked').value === 'update') {
-    const byPid = {}; [...rows.values()].sort((a, b) => (a.n || 0) - (b.n || 0)).forEach(r => { if (r.pid) (byPid[r.pid] = byPid[r.pid] || []).push(r); });
-    const used = {}, changed = []; let pics = 0;
+    const byName = map.pid == null;
+    const nk = t => String(t || '').toLowerCase().replace(/[—–]/g, '-').replace(/\s+/g, ' ').trim();
+    const keysOf = r => byName ? [nk(r.variation ? r.name + ' - ' + r.variation : r.name)] : (r.pid ? [r.pid] : []);
+    const byPid = {}; [...rows.values()].sort((a, b) => (a.n || 0) - (b.n || 0)).forEach(r => {
+      const ks = keysOf(r); if (byName && r.variation) ks.push(nk(r.name));
+      ks.forEach(k => { if (k) (byPid[k] = byPid[k] || []).push(r); });
+    });
+    const used = {}, changed = []; let pics = 0, asps = 0; const miss = [];
     for (const nr of out) {
-      if (!nr.pid || !byPid[nr.pid]) continue;
-      const k = used[nr.pid] = (used[nr.pid] || 0); const ex = byPid[nr.pid][Math.min(k, byPid[nr.pid].length - 1)]; used[nr.pid]++;
+      const key = keysOf(nr)[0];
+      if (!key || !byPid[key]) { if (byName && nr.asp != null) miss.push(nr.name); continue; }
+      const targets = byName ? byPid[key] : [byPid[key][Math.min(used[key] = (used[key] || 0), byPid[key].length - 1)]]; used[key]++;
+      for (const ex of targets) {
       let ch = false;
       if (nr.img && nr.img !== ex.img) { ex.img = nr.img; pics++; ch = true; }
       if (nr.cost != null && nr.cost !== ex.cost) { ex.cost = nr.cost; ch = true; }
+      if (nr.asp != null && nr.asp !== ex.asp) { ex.asp = nr.asp; asps++; ch = true; }
       if (ch && !changed.includes(ex)) changed.push(ex);
+      }
     }
+    if (miss.length) console.log('Average retail price — no matching product name:', miss);
     render();
     if (mode === 'db') await pool(changed, r => saveRow(r.id, true)); else localSave();
     syncLabel();
-    toast(`Updated ${changed.length} products (${pics} pictures added).` + (pics ? '' : ' No pictures were found in that file.'));
+    toast(`Updated ${changed.length} products (${pics} pictures, ${asps} average retail prices).` + (miss.length ? ` ${miss.length} rows in the file matched no product name.` : ''));
     return;
   }
   const old = replace ? [...rows.keys()] : [];
@@ -856,11 +871,11 @@ $('bExport').onclick = async () => {
   st.addRow(['Setting', 'Value']).font = {bold: true};
   const ref = {};
   SET.forEach(([k, l, isPct], i) => { const row = st.addRow([l, isPct ? (+S[k] || 0) / 100 : +S[k] || 0]); if (isPct) row.getCell(2).numFmt = '0.00%'; ref[k] = `Settings!$B$${i + 2}`; });
-  const H = ['Image','Product name','Variation','Product ID','SKU ID','Sheet cost 本钱','Real cost','Extra cost','Seller shipping % of cost','Affiliate %','Platform fee %','Break-even price','Fees as % of cost','Profit markup %','Total markup on cost %','Selling price','TikTok fees','You receive','We earn','Margin'];
+  const H = ['Image','Product name','Variation','Product ID','SKU ID','Sheet cost 本钱','Real cost','Extra cost','Seller shipping % of cost','Affiliate %','Platform fee %','Break-even price','Fees as % of cost','Profit markup %','Total markup on cost %','Selling price','TikTok fees','You receive','We earn','Margin','Average retail price'];
   ws.addRow(H);
   ws.getRow(1).font = {bold: true, color: {argb: 'FFFFFFFF'}};
   ws.getRow(1).fill = {type: 'pattern', pattern: 'solid', fgColor: {argb: 'FF107C41'}};
-  ws.columns = [10, 40, 18, 22, 20, 12, 11, 11, 11, 11, 12, 13, 12, 12, 14, 12, 12, 12, 11, 10].map(w => ({width: w}));
+  ws.columns = [10, 40, 18, 22, 20, 12, 11, 11, 11, 11, 12, 13, 12, 12, 14, 12, 12, 12, 11, 10, 13].map(w => ({width: w}));
   const rates = j => `(K${j}+J${j})`;
   const fixed = j => `(${ref.flat}+IF(G${j}="",0,G${j})*I${j}+${ref.txn}*${ref.custShip})`;
   const list = visibleRows();
@@ -879,11 +894,12 @@ $('bExport').onclick = async () => {
       {formula: `IF(P${j}="","",P${j}*${rates(j)}+${fixed(j)})`, result: o.fees ?? ''},
       {formula: `IF(P${j}="","",P${j}-Q${j})`, result: o.settle ?? ''},
       {formula: `IF(P${j}="","",R${j}-IF(G${j}="",0,G${j})-H${j})`, result: o.profit ?? ''},
-      {formula: `IF(OR(P${j}="",P${j}=0),"",S${j}/P${j})`, result: o.margin ?? ''}
+      {formula: `IF(OR(P${j}="",P${j}=0),"",S${j}/P${j})`, result: o.margin ?? ''},
+      blank(r.asp) ? null : +r.asp
     ]);
     row.height = 46; row.alignment = {vertical: 'middle', wrapText: false};
     row.getCell(2).alignment = {vertical: 'middle', wrapText: true};
-    [6,7,8,12,16,17,18,19].forEach(c => row.getCell(c).numFmt = '#,##0.00');
+    [6,7,8,12,16,17,18,19,21].forEach(c => row.getCell(c).numFmt = '#,##0.00');
     [9,10,11,13,14,15,20].forEach(c => row.getCell(c).numFmt = '0.0%');
     row.getCell(15).fill = {type: 'pattern', pattern: 'solid', fgColor: {argb: 'FFFFFBE8'}};
     if (r.img && r.img.startsWith('data:image/')) {
