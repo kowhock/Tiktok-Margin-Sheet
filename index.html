@@ -324,6 +324,23 @@ const CFG = window.KH_CONFIG || {};
 const sb = (window.supabase && CFG.SUPABASE_URL && !/YOUR_/.test(CFG.SUPABASE_URL)) ? window.supabase.createClient(CFG.SUPABASE_URL, CFG.SUPABASE_ANON_KEY) : null;
 async function sbUpsert(id, data) { const {error} = await sb.from('products').upsert({id, data, updated_at: new Date().toISOString()}); if (error) throw error; }
 async function sbDelete(id) { const {error} = await sb.from('products').delete().eq('id', id); if (error) throw error; }
+/* Average retail price from the TikTok ASP sheet (YTD 19 Nov 2026). Filled once into rows that never had one;
+   after that the cell is yours to edit — a cleared cell stays cleared. */
+const ASP_LIST = [["B.i.Care Nano Ceramic Tiles Anti Slip Agent | Ubat Lantai Licin Anti Gelincir | 防滑剂 防滑液 瓷砖防滑 Bathroom Floor Treatment FREE Roller Handle", 96.55], ["Extinguisher Fire Stop Foam Fire Extinguisher Home Emengency Portable Spray — 500ML", 7.45], ["Extinguisher Fire Stop Foam Fire Extinguisher Home Emengency Portable Spray — 1000ML", 10.0], ["KLEENSO Concentrated Stain Remover Mosaic and Toilet Tiles Stain Cleaner 1L", 15.14], ["PROGUARD Safety Helmet //Industrial Safety Helmet Protection", 14.19], ["B.i.Care Steel Toe Safety Shoes Anti Slip Work Boots Industrial Safety Footwear", 34.78], ["B.i.care 950W ANGLE GRINDER (BN-402026)", 98.51], ["B.I.Care 16.8V Battery Drill (BN-402027)", 169.08], ["B.i.care BC6-100 1300W HIGH PRESSURE CLEANER", 197.76], ["18L B.I.CARE Weather Exterior Wall Paint Weather Resistant Anti Fungus Anti Algae Outdoor Paint", 289.97], ["Anza 14\" stainless steel putty knife 35cm sudu skim coat scraper", 54.59], ["5L B.I.CARE 5100 Cat Sealer Cat Primer Cat Dasar Dinding Interior Exterior", 79.0], ["1L 5L  B.I.CARE Easy Wash Interior Wall Paint Washable Matt Finish Low Odour Home Paint — 1L", 34.78], ["1L 5L  B.I.CARE Easy Wash Interior Wall Paint Washable Matt Finish Low Odour Home Paint — 5L", 111.98], ["PVC Traffic Cone 77cm Safety Cone Road Cone Reflective Traffic Safety Cone Kon Keselamatan", 30.0], ["B.i.care 850W ROTARY HAMMER (BN-402025)", 242.0], ["5L  B.I.CARE 5400 Exterior Wall Sealer Anti Alkali Exterior Primer Undercoat Paint Sealer", 55.29], ["18L B.I.CARE 5400 Exterior Wall Sealer Anti Alkali Exterior Primer Undercoat Paint Sealer", 128.03], ["18L B.I.CARE 5100 Cat Sealer Cat Primer Cat Dasar Dinding Interior Exterior", 179.31], ["18L B.I.CARE Easy Wash Interior Wall Paint Washable Matt Finish Low Odour Home Paint", 272.0], ["JOTUN Majestic True Beauty Matt 20L | Premium Interior Wall Paint | Cat Dinding Dalam Rumah", 379.0], ["Jotun Ultra Primer 20L | Cat Primer Dinding Simen Baru | Water Based Interior Exterior Wall Primer", 255.0], ["NIPPON WEATHERBOND ULTIMATE ANTI-DIRT SERIES — 5Liter White 1001", 194.83], ["NIPPON WEATHERBOND ULTIMATE ANTI-DIRT SERIES — 15Liter White 1001", 439.88], ["Nippon Paint 8100 Weatherbond Exterior Sealer - 5L & 15L — 5 Liter", 121.5], ["Nippon Paint 8100 Weatherbond Exterior Sealer - 5L & 15L — 15 Liter", 252.89], ["Nippon 8200 Premium Interior Sealer | Wall Sealer | Sealer Dinding Dalaman — 5 Liter", 108.57], ["5L/18L Nippon Paint 5400 Exterior Sealer Wall Primer Sealer Undercoat Anti Alkaline — 18 LITER", 169.53], ["5L/18L Nippon Paint 5400 Exterior Sealer Wall Primer Sealer Undercoat Anti Alkaline — 5 LITER", 71.6], ["18L Nippon Paint EasyWash 145 Pure White Interior Wall Paint Washable Low Odor Paint — 18 LITER", 294.69], ["5L Nippon Paint EasyWash 145 Pure White Interior Wall Paint Washable Low Odor Paint — 5 LITER", 122.56], ["18L Nippon Paint Weatherbond 1001 / 145 / 15004 Exterior Wall Paint Outdoor Waterproof Weather Resistant Cat Luar Rumah — 1001 - 18L", 373.73], ["5L/18L Nippon Interior Sealer 3200 Nippon Interior Undercoat 3200 — 5L", 57.14], ["5L/18L Nippon Interior Sealer 3200 Nippon Interior Undercoat 3200 — 18L", 124.05], ["7L Nippon Matex White 9102/145/15245 /9103 Nippon Matex White Paint Paints Ceiling Dinding Cat Dalam Rumah Interior Wall — 145 white 7L", 46.31], ["18L Nippon Matex White 9102/145/15245 /9103 Nippon Matex White Paint Paints Ceiling Dinding Cat Dalam Rumah Interior Wall — 145 white 18L", 90.99], ["Dewalt Atomic DCF850D2A-B1 6.35mm ( 1/4\" ) 20V Brushless Cordless Impact Driver ( DCF850D2A, DCF850 )", 1280.4], ["DEWALT DW802 SA Grinder With Slider Switch 4\" 850W (Pengisar Dengan Suis Gelangsar)", 201.0]];
+const aspKey = t => String(t || '').toLowerCase().replace(/[^a-z0-9\u4e00-\u9fff]+/g, '');
+async function fillAsp() {
+  if (readOnly) return;
+  const tbl = {}; ASP_LIST.forEach(([n, p]) => tbl[aspKey(n)] = p);
+  const hit = [];
+  for (const r of rows.values()) {
+    if ('asp' in r) continue;
+    const p = tbl[aspKey(r.variation ? r.name + r.variation : r.name)] ?? tbl[aspKey(r.name)];
+    if (p != null) { r.asp = p; hit.push(r); }
+  }
+  if (!hit.length) return;
+  render(); await pool(hit, r => saveRow(r.id, true)); syncLabel();
+  toast(`Filled average retail price for ${hit.length} products from the TikTok ASP sheet.`);
+}
 let started = false;
 async function startData() {
   if (started) return; started = true;
@@ -333,6 +350,7 @@ async function startData() {
   rows.clear(); (prods || []).forEach(p => rows.set(p.id, {...p.data, id: p.id}));
   if (sets && sets[0]) S = {...DEF, ...sets[0].data};
   render();
+  fillAsp();
   sb.channel('kh-margins')
     .on('postgres_changes', {event: '*', schema: 'public', table: 'products'}, ev => {
       const id = (ev.new && ev.new.id) || (ev.old && ev.old.id); if (!id || timers[id]) return;
